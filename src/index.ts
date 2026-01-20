@@ -34,6 +34,13 @@ export {
   type ProgressInfo,
 } from './compressor.js';
 
+// Chunked compressor (parallel decompression)
+export {
+  ChunkedCompressor,
+  type ChunkedCompressorOptions,
+  type ChunkedCompressionResult,
+} from './chunked-compressor.js';
+
 // Core arithmetic coding (for advanced usage)
 export {
   ArithmeticEncoder,
@@ -71,6 +78,13 @@ export {
   deserializeHeader,
   combineHeaderAndPayload,
   splitHeaderAndPayload,
+  // Chunked format
+  type ChunkedHeader,
+  type ChunkConfig,
+  CHUNKED_MAGIC_BYTES,
+  CHUNKED_FORMAT_VERSION,
+  DEFAULT_CHUNK_CONFIG,
+  isChunkedFormat,
 } from './format/index.js';
 
 // Utilities
