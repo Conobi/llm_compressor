@@ -1,4 +1,4 @@
-import * as ort from 'onnxruntime-web';
+import type * as OrtWeb from 'onnxruntime-web';
 import { softmax } from './softmax.js';
 import {
   type RWKVState,
@@ -7,6 +7,7 @@ import {
   createInitialState,
 } from './rwkv-state.js';
 import { detectPlatform, isCrossOriginIsolated } from '../utils/platform.js';
+import { getOptimalBackend, type OnnxBackend } from './onnx-backend.js';
 
 /**
  * Options for RWKV session initialization.
@@ -31,11 +32,13 @@ export interface RWKVSessionOptions {
  * - Probability distribution computation from logits
  */
 export class RWKVSession {
-  private session: ort.InferenceSession | null = null;
+  private session: OrtWeb.InferenceSession | null = null;
   private state: RWKVState;
   private config: RWKVConfig;
   private options: RWKVSessionOptions;
   private initialized: boolean = false;
+  private ort: typeof OrtWeb | null = null;
+  private backendName: string = '';
 
   constructor(options: RWKVSessionOptions) {
     this.options = options;
@@ -51,26 +54,35 @@ export class RWKVSession {
 
     const platform = detectPlatform();
 
-    // Configure ONNX Runtime WASM backend
-    ort.env.wasm.proxy = platform.isBrowser; // Use web worker in browser
+    // Get optimal backend for current environment
+    const backend: OnnxBackend = await getOptimalBackend();
+    this.ort = backend.ort;
+    this.backendName = backend.backendName;
 
-    if (platform.supportsSharedArrayBuffer && isCrossOriginIsolated()) {
-      ort.env.wasm.numThreads = Math.min(
-        this.options.wasmThreads ?? 4,
-        Math.max(1, Math.floor(platform.availableThreads / 2))
-      );
-    } else {
-      ort.env.wasm.numThreads = 1;
-      if (platform.isBrowser) {
-        console.warn(
-          'SharedArrayBuffer not available. Enable cross-origin isolation for better performance.'
+    console.log(`Using ONNX backend: ${backend.backendName}`);
+
+    // Configure WASM backend settings (applies when WASM is used)
+    if (backend.executionProviders.includes('wasm')) {
+      this.ort.env.wasm.proxy = platform.isBrowser; // Use web worker in browser
+
+      if (platform.supportsSharedArrayBuffer && isCrossOriginIsolated()) {
+        this.ort.env.wasm.numThreads = Math.min(
+          this.options.wasmThreads ?? 4,
+          Math.max(1, Math.floor(platform.availableThreads / 2))
         );
+      } else {
+        this.ort.env.wasm.numThreads = 1;
+        if (platform.isBrowser) {
+          console.warn(
+            'SharedArrayBuffer not available. Enable cross-origin isolation for better performance.'
+          );
+        }
       }
     }
 
-    // Session options
-    const sessionOptions: ort.InferenceSession.SessionOptions = {
-      executionProviders: ['wasm'],
+    // Session options with detected execution providers
+    const sessionOptions: OrtWeb.InferenceSession.SessionOptions = {
+      executionProviders: backend.executionProviders,
       graphOptimizationLevel: 'all',
     };
 
@@ -111,7 +123,7 @@ export class RWKVSession {
     }
 
     // Create ONNX session
-    this.session = await ort.InferenceSession.create(
+    this.session = await this.ort.InferenceSession.create(
       new Uint8Array(modelData),
       sessionOptions
     );
@@ -141,7 +153,7 @@ export class RWKVSession {
    * @returns Float32Array of probabilities, length = vocabSize
    */
   async processToken(token: number): Promise<Float32Array> {
-    if (!this.session) {
+    if (!this.session || !this.ort) {
       throw new Error('Session not initialized. Call init() first.');
     }
 
@@ -153,13 +165,13 @@ export class RWKVSession {
     // Prepare state tensors
     const stateShape = [this.config.n_layer, this.config.n_embd];
 
-    const feeds: ort.InferenceSession.OnnxValueMapType = {
-      idx: new ort.Tensor('int32', idxData, [this.config.ctx_len]),
-      xx_att: new ort.Tensor('float32', this.state.xx_att, stateShape),
-      aa_att: new ort.Tensor('float32', this.state.aa_att, stateShape),
-      bb_att: new ort.Tensor('float32', this.state.bb_att, stateShape),
-      pp_att: new ort.Tensor('float32', this.state.pp_att, stateShape),
-      xx_ffn: new ort.Tensor('float32', this.state.xx_ffn, stateShape),
+    const feeds: OrtWeb.InferenceSession.OnnxValueMapType = {
+      idx: new this.ort.Tensor('int32', idxData, [this.config.ctx_len]),
+      xx_att: new this.ort.Tensor('float32', this.state.xx_att, stateShape),
+      aa_att: new this.ort.Tensor('float32', this.state.aa_att, stateShape),
+      bb_att: new this.ort.Tensor('float32', this.state.bb_att, stateShape),
+      pp_att: new this.ort.Tensor('float32', this.state.pp_att, stateShape),
+      xx_ffn: new this.ort.Tensor('float32', this.state.xx_ffn, stateShape),
     };
 
     // Run inference
@@ -239,7 +251,15 @@ export class RWKVSession {
   dispose(): void {
     this.session?.release();
     this.session = null;
+    this.ort = null;
     this.initialized = false;
+  }
+
+  /**
+   * Get the name of the backend being used.
+   */
+  getBackendName(): string {
+    return this.backendName;
   }
 
   /**

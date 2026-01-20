@@ -58,3 +58,41 @@ export function isCrossOriginIsolated(): boolean {
   }
   return true; // Node.js doesn't have this restriction
 }
+
+/**
+ * Check if WebGPU is available in the current environment.
+ * Must be called in an async context as GPU adapter check is async.
+ */
+export async function supportsWebGPU(): Promise<boolean> {
+  if (typeof navigator === 'undefined' || !('gpu' in navigator)) {
+    return false;
+  }
+  try {
+    // Type assertion for WebGPU API (not yet in all TypeScript libs)
+    const gpu = (navigator as { gpu?: { requestAdapter(): Promise<unknown | null> } }).gpu;
+    if (!gpu) return false;
+    const adapter = await gpu.requestAdapter();
+    return adapter !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if WebGL is available in the current environment.
+ */
+export function supportsWebGL(): boolean {
+  if (typeof document === 'undefined') {
+    return false;
+  }
+  try {
+    const canvas = document.createElement('canvas');
+    const gl =
+      canvas.getContext('webgl2') ||
+      canvas.getContext('webgl') ||
+      canvas.getContext('experimental-webgl');
+    return gl !== null;
+  } catch {
+    return false;
+  }
+}
